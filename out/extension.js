@@ -76,9 +76,9 @@ const cssRuleDecorationType = vscode.window.createTextEditorDecorationType({
 });
 // White border highlight for currently analyzed code - THICKER AND MORE VISIBLE
 const activeHoverDecorationType = vscode.window.createTextEditorDecorationType({
-    border: '3px solid rgba(255, 255, 255, 0.8)',
+    border: '1px solid rgba(255, 255, 255, 0.8)',
     borderRadius: '4px',
-    isWholeLine: true,
+    isWholeLine: false,
     backgroundColor: 'rgba(255, 255, 255, 0.1)' // Slight white background too
 });
 function analyzeCode(code, document) {
@@ -309,7 +309,7 @@ async function getAIExplanationWithContext(code, codeType, document, fullFileCon
     }
     const client = getOpenAIClient();
     if (!client) {
-        return `AI explanation unavailable. Please configure your OpenAI API key in VS Code settings (search for "Margin: OpenAI API Key").`;
+        return `AI explanation unavailable. Please configure your OpenAI API key in VS Code settings (search for "margin: OpenAI API Key").`;
     }
     try {
         const relatedFiles = await getRelatedFiles(document);
@@ -350,8 +350,8 @@ async function getAIExplanationWithContext(code, codeType, document, fullFileCon
     }
 }
 function activate(context) {
-    console.log('Margin extension is now active!');
-    vscode.window.showInformationMessage('Margin is now active!');
+    console.log('margin extension is now active!');
+    vscode.window.showInformationMessage('margin is now active!');
     let activeEditor = vscode.window.activeTextEditor;
     if (activeEditor) {
         updateDecorations(activeEditor);
@@ -361,7 +361,7 @@ function activate(context) {
         if (editor) {
             updateDecorations(editor);
             if (marginPanel) {
-                marginPanel.webview.html = getWebviewContent(context, editor);
+                marginPanel.webview.html = getWebviewContent(context, editor, marginPanel.webview);
             }
         }
     }, null, context.subscriptions);
@@ -369,7 +369,7 @@ function activate(context) {
         if (activeEditor && event.document === activeEditor.document) {
             updateDecorations(activeEditor);
             if (marginPanel) {
-                marginPanel.webview.html = getWebviewContent(context, activeEditor);
+                marginPanel.webview.html = getWebviewContent(context, activeEditor, marginPanel.webview);
             }
         }
     }, null, context.subscriptions);
@@ -388,7 +388,7 @@ function activate(context) {
         if (editor) {
             updateDecorations(editor);
         }
-        vscode.window.showInformationMessage(`Margin hover analysis ${isHoverEnabled ? 'enabled' : 'disabled'}`);
+        vscode.window.showInformationMessage(`margin hover analysis ${isHoverEnabled ? 'enabled' : 'disabled'}`);
     });
     // Single AI-powered hover provider
     const aiHoverProvider = vscode.languages.registerHoverProvider(['javascript', 'typescript', 'javascriptreact', 'typescriptreact', 'html', 'css'], {
@@ -538,7 +538,7 @@ function activate(context) {
     const showLegendCommand = vscode.commands.registerCommand('margin.showLegend', () => {
         if (marginPanel) {
             const editor = vscode.window.activeTextEditor;
-            marginPanel.webview.html = getWebviewContent(context, editor);
+            marginPanel.webview.html = getWebviewContent(context, editor, marginPanel.webview);
         }
         else {
             createMarginPanel(context);
@@ -553,11 +553,14 @@ function createMarginPanel(context) {
         return;
     }
     const editor = vscode.window.activeTextEditor;
-    marginPanel = vscode.window.createWebviewPanel('margin', 'Margin', vscode.ViewColumn.Beside, {
+    marginPanel = vscode.window.createWebviewPanel('margin', 'margin', vscode.ViewColumn.Beside, {
         enableScripts: true,
-        localResourceRoots: [vscode.Uri.file(path.join(context.extensionPath, 'media'))]
+        localResourceRoots: [
+            vscode.Uri.file(path.join(context.extensionPath, 'media')),
+            vscode.Uri.file(context.extensionPath)
+        ]
     });
-    marginPanel.webview.html = getWebviewContent(context, editor);
+    marginPanel.webview.html = getWebviewContent(context, editor, marginPanel.webview);
     marginPanel.webview.onDidReceiveMessage(message => {
         switch (message.type) {
             case 'toggleHover':
@@ -590,7 +593,7 @@ function createMarginPanel(context) {
         }
     }, null, context.subscriptions);
 }
-function getWebviewContent(context, editor) {
+function getWebviewContent(context, editor, webview) {
     let fileVisualization = '';
     const hasValidFile = editor && editor.document && ['javascript', 'typescript', 'javascriptreact', 'typescriptreact', 'html', 'css'].includes(editor.document.languageId);
     if (hasValidFile && editor) {
@@ -656,7 +659,7 @@ function getWebviewContent(context, editor) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Margin</title>
+    <title>margin</title>
     <style>
         * {
             margin: 0;
@@ -675,10 +678,20 @@ function getWebviewContent(context, editor) {
             padding-bottom: 16px;
             border-bottom: 1px solid var(--vscode-panel-border);
         }
+        .header-content {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 8px;
+        }
+        .logo {
+            height: 32px;
+            width: auto;
+        }
         .header h2 {
             font-size: 20px;
             font-weight: 600;
-            margin-bottom: 8px;
+            margin: 0;
             color: var(--vscode-foreground);
         }
         .header p {
@@ -705,7 +718,7 @@ function getWebviewContent(context, editor) {
             border: 1px solid var(--vscode-input-border);
         }
         .toggle.active {
-            background-color: var(--vscode-button-background);
+            background-color: #5451F6;
         }
         .toggle-slider {
             position: absolute;
@@ -792,39 +805,32 @@ function getWebviewContent(context, editor) {
             margin-bottom: 10px;
             padding: 6px 10px;
             border-radius: 5px;
-            background-color: var(--vscode-editor-inactiveSelectionBackground);
+            background-color: var(--vscode-editor-background);
         }
         .color-box {
             width: 40px;
             height: 40px;
             margin-right: 12px;
             border-radius: 4px;
-            border: 2px solid;
             flex-shrink: 0;
         }
         .function-color {
             background-color: rgba(100, 200, 100, 0.2);
-            border-color: rgba(100, 200, 100, 0.2);
         }
         .loop-color {
             background-color: rgba(200, 100, 100, 0.2);
-            border-color: rgba(200, 100, 100, 0.2);
         }
         .conditional-color {
             background-color: rgba(100, 100, 200, 0.2);
-            border-color: rgba(100, 100, 200, 0.2);
         }
         .api-color {
             background-color: rgba(200, 200, 100, 0.2);
-            border-color: rgba(200, 200, 100, 0.2);
         }
         .html-color {
             background-color: rgba(255, 165, 0, 0.2);
-            border-color: rgba(255, 165, 0, 0.2);
         }
         .css-color {
             background-color: rgba(138, 43, 226, 0.2);
-            border-color: rgba(138, 43, 226, 0.2);
         }
         .legend-description {
             flex: 1;
@@ -874,15 +880,17 @@ function getWebviewContent(context, editor) {
 </head>
 <body>
     <div class="header">
-        <h2>Margin</h2>
-        <p>AI-powered code understanding for designers</p>
+        <div class="header-content">
+            <img src="${webview ? webview.asWebviewUri(vscode.Uri.file(path.join(context.extensionPath, 'marginlogo.png'))) : ''}" alt="margin" class="logo">
+        </div>
+        <p>for designers to understand code</p>
     </div>
     
     <div class="toggle-container">
         <div class="toggle" id="hoverToggle">
             <div class="toggle-slider"></div>
         </div>
-        <label for="hoverToggle">Enable AI Hover Analysis</label>
+        <label for="hoverToggle">Enable Hover Analysis</label>
     </div>
     
     <div class="analysis-area" id="analysisArea">
@@ -976,7 +984,7 @@ function getWebviewContent(context, editor) {
             
             analysisArea.innerHTML = \`
                 <div class="analysis-content">
-                    <h3> AI Code Analysis</h3>
+                    <h3> Code Analysis</h3>
                     <div class="analysis-section">
                         <div class="analysis-label">Element Type</div>
                         <div class="analysis-value">
@@ -988,12 +996,12 @@ function getWebviewContent(context, editor) {
                         <div class="analysis-value" style="line-height: 1.6; white-space: pre-wrap;">\${analysis.purpose || 'N/A'}</div>
                     </div>
                     <div class="analysis-section">
-                        <div class="analysis-label">📍 Location</div>
+                        <div class="analysis-label">Location</div>
                         <div class="analysis-value">\${analysis.visualContext || 'N/A'}</div>
                     </div>
                     <div class="analysis-section">
                         <div class="analysis-label">Line Number</div>
-                        <div class="analysis-value">Line \${analysis.lineNumber || 'N/A'}</div>
+                        <div class="analysis-value">\${analysis.lineNumber || 'N/A'}</div>
                     </div>
                 </div>
             \`;

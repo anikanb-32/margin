@@ -5,10 +5,8 @@ import * as path from 'path';
 import OpenAI from 'openai';
 
 // Global state
-let marginPanel: vscode.WebviewPanel | undefined;
+let codeVisPanel: vscode.WebviewPanel | undefined;
 let isHoverEnabled = false;
-let lastAnalyzedRange: vscode.Range | undefined;
-let hoverTimeout: NodeJS.Timeout | undefined;
 
 // Define different highlight styles for different code types
 const functionDecorationType = vscode.window.createTextEditorDecorationType({
@@ -51,14 +49,6 @@ const cssRuleDecorationType = vscode.window.createTextEditorDecorationType({
     overviewRulerColor: 'rgba(138, 43, 226, 0.6)',
     overviewRulerLane: vscode.OverviewRulerLane.Right,
     isWholeLine: true
-});
-
-// White border highlight for currently analyzed code - THICKER AND MORE VISIBLE
-const activeHoverDecorationType = vscode.window.createTextEditorDecorationType({
-    border: '1px solid rgba(255, 255, 255, 0.8)',
-    borderRadius: '4px',
-    isWholeLine: false,  // Changed to false to allow single outline around multi-line blocks
-    backgroundColor: 'rgba(255, 255, 255, 0.1)'  // Slight white background too
 });
 
 function analyzeCode(code: string, document: vscode.TextDocument) {
@@ -201,22 +191,39 @@ function analyzeCode(code: string, document: vscode.TextDocument) {
     } else if (languageId === 'html') {
         const lines = code.split('\n');
         for (let i = 0; i < lines.length; i++) {
-            const line = lines[i];
-            if (line.match(/<[^/!][^>]*>/)) {
-                const range = new vscode.Range(i, 0, i, line.length);
+            const line = lines[i].trim();
+            // Match any line with HTML tags (opening, closing, or self-closing)
+            if (line.length > 0 && line.includes('<') && line.includes('>')) {
+                const range = new vscode.Range(i, 0, i, lines[i].length);
                 htmlElementRanges.push(range);
             }
         }
+        console.log('HTML parsing complete:', htmlElementRanges.length, 'elements found');
     } else if (languageId === 'css') {
         const lines = code.split('\n');
         for (let i = 0; i < lines.length; i++) {
-            const line = lines[i];
-            if (line.match(/^[^{}]+{/) || line.match(/^[^{}]+}/)) {
-                const range = new vscode.Range(i, 0, i, line.length);
+            const line = lines[i].trim();
+            // Match selectors, properties, or closing braces - be very permissive
+            if (line.length > 0 && (
+                line.includes('{') || 
+                line.includes('}') || 
+                (line.includes(':') && !line.startsWith('//') && !line.startsWith('/*'))
+            )) {
+                const range = new vscode.Range(i, 0, i, lines[i].length);
                 cssRuleRanges.push(range);
             }
         }
+        console.log('CSS parsing complete:', cssRuleRanges.length, 'rules found');
     }
+    
+    console.log('analyzeCode complete for', languageId, ':', {
+        functions: functionRanges.length,
+        loops: loopRanges.length,
+        conditionals: conditionalRanges.length,
+        apiCalls: apiCallRanges.length,
+        htmlElements: htmlElementRanges.length,
+        cssRules: cssRuleRanges.length
+    });
 
     return {
         functionRanges,
@@ -237,23 +244,22 @@ function updateDecorations(editor: vscode.TextEditor) {
         return;
     }
 
-    // Only show decorations when hover analysis is enabled
-    if (!isHoverEnabled) {
-        // Clear all decorations when disabled
+    const document = editor.document;
+    const languageId = document.languageId;
+
+    if (!codeVisPanel || !isHoverEnabled) {
         editor.setDecorations(functionDecorationType, []);
         editor.setDecorations(loopDecorationType, []);
         editor.setDecorations(conditionalDecorationType, []);
         editor.setDecorations(apiCallDecorationType, []);
         editor.setDecorations(htmlElementDecorationType, []);
         editor.setDecorations(cssRuleDecorationType, []);
-        editor.setDecorations(activeHoverDecorationType, []);
         return;
     }
 
-    const document = editor.document;
-    const code = document.getText();
-    const languageId = document.languageId;
+    console.log('Updating decorations for file:', document.fileName, 'Language:', languageId, 'Hover enabled:', isHoverEnabled);
 
+    const code = document.getText();
     const {
         functionRanges,
         loopRanges,
@@ -273,14 +279,18 @@ function updateDecorations(editor: vscode.TextEditor) {
     } else if (languageId === 'css') {
         editor.setDecorations(cssRuleDecorationType, cssRuleRanges);
     }
-    
-    // Apply white border to last analyzed range if it exists
-    if (lastAnalyzedRange) {
-        editor.setDecorations(activeHoverDecorationType, [lastAnalyzedRange]);
-    }
+
+    console.log('Decorations applied:', {
+        functions: functionRanges.length,
+        loops: loopRanges.length,
+        conditionals: conditionalRanges.length,
+        apiCalls: apiCallRanges.length,
+        htmlElements: htmlElementRanges.length,
+        cssRules: cssRuleRanges.length
+    });
 }
 
-// OpenAI client and cache
+// OpenAI setup
 let openaiClient: OpenAI | null = null;
 const explanationCache = new Map<string, string>();
 
@@ -289,7 +299,7 @@ function getOpenAIClient(): OpenAI | null {
         return openaiClient;
     }
     
-    const config = vscode.workspace.getConfiguration('margin');
+    const config = vscode.workspace.getConfiguration('codevis');
     let apiKey = config.get<string>('openaiApiKey');
     
     if (!apiKey) {
@@ -366,7 +376,7 @@ async function getAIExplanationWithContext(
     const client = getOpenAIClient();
     
     if (!client) {
-        return `AI explanation unavailable. Please configure your OpenAI API key in VS Code settings (search for "margin: OpenAI API Key").`;
+        return `**${codeType}**\n\nAI explanation unavailable. Please configure your OpenAI API key in VS Code settings (search for "CodeVis: OpenAI API Key").`;
     }
     
     try {
@@ -385,39 +395,33 @@ async function getAIExplanationWithContext(
             messages: [
                 {
                     role: "system",
-                    content: "You are a helpful code explanation assistant for designers who are learning to code. Explain code snippets in 1-2 short sentences. Focus on what the code does and why it's important. Use simple language. CRITICAL: Do NOT use phrases like 'The `element` element', 'This element', 'The element', or any variation that references the element name. Instead, directly explain what the code does without mentioning element names. Start your explanation with action words like 'This displays', 'This creates', 'This handles', 'This manages', etc. If the code snippet appears to be empty or contains only whitespace, respond with 'No meaningful code detected at this location.'"
+                    content: "You are a helpful code explanation assistant for designers who are learning to code. You have access to the full project context. Explain code snippets concisely in 2-4 sentences, considering how they fit into the larger project. Focus on what the code does, why it exists in this context, and how it relates to other parts of the codebase. Use simple language and avoid jargon when possible."
                 },
                 {
                     role: "user",
                     content: contextMessage
                 }
             ],
-            max_tokens: 100,
+            max_tokens: 200,
             temperature: 0.3
         });
         
-        let explanation = response.choices[0]?.message?.content || 'No explanation available.';
-        
-        // Clean up any remaining element references
-        explanation = explanation.replace(/^The\s+`[^`]+`\s+element\s+/i, '');
-        explanation = explanation.replace(/^This\s+element\s+/i, 'This ');
-        explanation = explanation.replace(/^The\s+element\s+/i, '');
-        
+        const explanation = response.choices[0]?.message?.content || 'No explanation available.';
         explanationCache.set(cacheKey, explanation);
         
         return explanation;
     } catch (error: any) {
         console.error('OpenAI API error:', error);
         if (error?.status === 401) {
-            return `Invalid API key. Please check your OpenAI API key in VS Code settings.`;
+            return `**${codeType}**\n\n❌ Invalid API key. Please check your OpenAI API key in VS Code settings.`;
         }
-        return `Error getting AI explanation: ${error?.message || 'Unknown error'}`;
+        return `**${codeType}**\n\n❌ Error getting AI explanation: ${error?.message || 'Unknown error'}`;
     }
 }
 
 export function activate(context: vscode.ExtensionContext) {
-    console.log('margin extension is now active!');
-    vscode.window.showInformationMessage('margin is now active!');
+    console.log('CodeVis extension is now active!');
+    vscode.window.showInformationMessage('CodeVis is now active!');
 
     let activeEditor = vscode.window.activeTextEditor;
     if (activeEditor) {
@@ -428,8 +432,8 @@ export function activate(context: vscode.ExtensionContext) {
         activeEditor = editor;
         if (editor) {
             updateDecorations(editor);
-            if (marginPanel) {
-                marginPanel.webview.html = getWebviewContent(context, editor, marginPanel.webview);
+            if (codeVisPanel) {
+                codeVisPanel.webview.html = getWebviewContent(context, editor);
             }
         }
     }, null, context.subscriptions);
@@ -437,20 +441,20 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.workspace.onDidChangeTextDocument(event => {
         if (activeEditor && event.document === activeEditor.document) {
             updateDecorations(activeEditor);
-            if (marginPanel) {
-                marginPanel.webview.html = getWebviewContent(context, activeEditor, marginPanel.webview);
+            if (codeVisPanel) {
+                codeVisPanel.webview.html = getWebviewContent(context, activeEditor);
             }
         }
     }, null, context.subscriptions);
 
-    const openPanelCommand = vscode.commands.registerCommand('margin.openPanel', () => {
-        createMarginPanel(context);
+    const openPanelCommand = vscode.commands.registerCommand('codevis.openPanel', () => {
+        createCodeVisPanel(context);
     });
 
-    const toggleHoverCommand = vscode.commands.registerCommand('margin.toggleHover', () => {
+    const toggleHoverCommand = vscode.commands.registerCommand('codevis.toggleHover', () => {
         isHoverEnabled = !isHoverEnabled;
-        if (marginPanel) {
-            marginPanel.webview.postMessage({
+        if (codeVisPanel) {
+            codeVisPanel.webview.postMessage({
                 type: 'hoverToggled',
                 enabled: isHoverEnabled
             });
@@ -459,7 +463,7 @@ export function activate(context: vscode.ExtensionContext) {
         if (editor) {
             updateDecorations(editor);
         }
-        vscode.window.showInformationMessage(`margin hover analysis ${isHoverEnabled ? 'enabled' : 'disabled'}`);
+        vscode.window.showInformationMessage(`CodeVis hover analysis ${isHoverEnabled ? 'enabled' : 'disabled'}`);
     });
 
     // Single AI-powered hover provider
@@ -467,7 +471,7 @@ export function activate(context: vscode.ExtensionContext) {
         ['javascript', 'typescript', 'javascriptreact', 'typescriptreact', 'html', 'css'],
         {
             async provideHover(document, position, token) {
-                if (!isHoverEnabled || !marginPanel) {
+                if (!isHoverEnabled || !codeVisPanel) {
                     return null;
                 }
 
@@ -479,102 +483,72 @@ export function activate(context: vscode.ExtensionContext) {
                 
                 let hoveredRange: vscode.Range | null = null;
                 let codeType = '';
+                let emoji = '';
                 
-                // Collect all ranges that contain the hover position
-                const containingRanges: { range: vscode.Range; type: string }[] = [];
-                
+                // Determine what type of code is being hovered
                 if (['javascript', 'typescript', 'javascriptreact', 'typescriptreact'].includes(languageId)) {
-                    functionRanges.forEach(range => {
-                        if (range.contains(position)) containingRanges.push({ range, type: 'Function' });
-                    });
-                    loopRanges.forEach(range => {
-                        if (range.contains(position)) containingRanges.push({ range, type: 'Loop' });
-                    });
-                    conditionalRanges.forEach(range => {
-                        if (range.contains(position)) containingRanges.push({ range, type: 'Conditional' });
-                    });
-                    apiCallRanges.forEach(range => {
-                        if (range.contains(position)) containingRanges.push({ range, type: 'API Call' });
-                    });
-                } else if (languageId === 'html') {
-                    htmlElementRanges.forEach(range => {
-                        if (range.contains(position)) containingRanges.push({ range, type: 'HTML Element' });
-                    });
-                } else if (languageId === 'css') {
-                    cssRuleRanges.forEach(range => {
-                        if (range.contains(position)) containingRanges.push({ range, type: 'CSS Rule' });
-                    });
-                }
-                
-                if (containingRanges.length > 0) {
-                    // Find the largest range (most lines and characters)
-                    const largestRange = containingRanges.reduce((largest, current) => {
-                        const currentSize = (current.range.end.line - current.range.start.line) * 1000 + 
-                                          (current.range.end.character - current.range.start.character);
-                        const largestSize = (largest.range.end.line - largest.range.start.line) * 1000 + 
-                                           (largest.range.end.character - largest.range.start.character);
-                        return currentSize > largestSize ? current : largest;
-                    });
-                    
-                    hoveredRange = largestRange.range;
-                    codeType = largestRange.type;
-                } else {
-                    // Fallback to current line for unsupported content
-                    const line = document.lineAt(position.line);
-                    const lineText = line.text.trim();
-                    
-                    if (languageId === 'html' && lineText && (lineText.includes('<') || lineText.includes('>'))) {
-                        hoveredRange = line.range;
-                        codeType = 'HTML Element';
-                    } else if (languageId === 'css' && lineText && (lineText.includes(':') || lineText.includes('{') || lineText.includes('}'))) {
-                        hoveredRange = line.range;
-                        codeType = 'CSS Property';
-                    } else if (['javascript', 'typescript', 'javascriptreact', 'typescriptreact'].includes(languageId)) {
+                    if (functionRanges.some(isInRange)) {
+                        hoveredRange = functionRanges.find(isInRange) || null;
+                        codeType = 'Function';
+                        emoji = '🟢';
+                    } else if (loopRanges.some(isInRange)) {
+                        hoveredRange = loopRanges.find(isInRange) || null;
+                        codeType = 'Loop';
+                        emoji = '🔴';
+                    } else if (conditionalRanges.some(isInRange)) {
+                        hoveredRange = conditionalRanges.find(isInRange) || null;
+                        codeType = 'Conditional';
+                        emoji = '🔵';
+                    } else if (apiCallRanges.some(isInRange)) {
+                        hoveredRange = apiCallRanges.find(isInRange) || null;
+                        codeType = 'API Call';
+                        emoji = '🟡';
+                    } else {
+                        // For any other JS/TS code, get the current line
+                        const line = document.lineAt(position.line);
                         hoveredRange = line.range;
                         codeType = 'Code Block';
+                        emoji = '⚪';
+                    }
+                } else if (languageId === 'html') {
+                    if (htmlElementRanges.some(isInRange)) {
+                        hoveredRange = htmlElementRanges.find(isInRange) || null;
+                        codeType = 'HTML Element';
+                        emoji = '🟠';
                     } else {
-                        // Skip empty lines or unsupported content
-                        return null;
+                        // If not in a detected range, get the current line for HTML
+                        const line = document.lineAt(position.line);
+                        hoveredRange = line.range;
+                        codeType = 'HTML Element';
+                        emoji = '🟠';
+                    }
+                } else if (languageId === 'css') {
+                    if (cssRuleRanges.some(isInRange)) {
+                        hoveredRange = cssRuleRanges.find(isInRange) || null;
+                        codeType = 'CSS Rule';
+                        emoji = '🟣';
+                    } else {
+                        // If not in a detected range, get the current line for CSS
+                        const line = document.lineAt(position.line);
+                        hoveredRange = line.range;
+                        codeType = 'CSS Property';
+                        emoji = '🟣';
                     }
                 }
                 
-                if (hoveredRange && marginPanel) {
-                    const codeSnippet = document.getText(hoveredRange).trim();
-                    
-                    // Skip analysis if code snippet is empty or just whitespace
-                    if (!codeSnippet) {
-                        return null;
-                    }
-                    
-                     // Store the range and apply white border decoration
-                     lastAnalyzedRange = hoveredRange;
-                     const editor = vscode.window.activeTextEditor;
-                     if (editor) {
-                         editor.setDecorations(activeHoverDecorationType, [hoveredRange]);
-                         
-                         // Clear previous timeout
-                         if (hoverTimeout) {
-                             clearTimeout(hoverTimeout);
-                         }
-                         
-                         // Set timeout to clear white border after 3 seconds
-                         hoverTimeout = setTimeout(() => {
-                             editor.setDecorations(activeHoverDecorationType, []);
-                             lastAnalyzedRange = undefined;
-                         }, 3000);
-                     }
-                    
+                if (hoveredRange && codeVisPanel) {
+                    const codeSnippet = document.getText(hoveredRange);
                     const fullFileContent = document.getText();
                     const lineNumber = position.line + 1;
                     const fileName = document.fileName.split('/').pop() || 'Unknown';
                     
-                    // Send immediate update to panel WITHOUT code snippet
-                    marginPanel.webview.postMessage({
+                    // Send immediate update to panel with code snippet
+                    codeVisPanel.webview.postMessage({
                         type: 'codeAnalysis',
                         analysis: {
-                            elementType: codeType,
-                            purpose: 'Loading AI explanation...',
-                            visualContext: `Found in ${fileName} at line ${lineNumber}`,
+                            codeLine: codeSnippet.substring(0, 150) + (codeSnippet.length > 150 ? '...' : ''),
+                            elementType: `${emoji} ${codeType}`,
+                            purpose: '⏳ Analyzing with AI...',
                             lineNumber: lineNumber,
                             isLoading: true
                         }
@@ -587,13 +561,13 @@ export function activate(context: vscode.ExtensionContext) {
                         document,
                         fullFileContent
                     ).then(explanation => {
-                        if (marginPanel) {
-                            marginPanel.webview.postMessage({
+                        if (codeVisPanel) {
+                            codeVisPanel.webview.postMessage({
                                 type: 'codeAnalysis',
                                 analysis: {
-                                    elementType: codeType,
+                                    codeLine: codeSnippet.substring(0, 150) + (codeSnippet.length > 150 ? '...' : ''),
+                                    elementType: `${emoji} ${codeType}`,
                                     purpose: explanation,
-                                    visualContext: `Found in ${fileName} at line ${lineNumber}`,
                                     lineNumber: lineNumber,
                                     isLoading: false
                                 }
@@ -601,13 +575,13 @@ export function activate(context: vscode.ExtensionContext) {
                         }
                     }).catch(error => {
                         console.error('Error getting AI explanation:', error);
-                        if (marginPanel) {
-                            marginPanel.webview.postMessage({
+                        if (codeVisPanel) {
+                            codeVisPanel.webview.postMessage({
                                 type: 'codeAnalysis',
                                 analysis: {
-                                    elementType: codeType,
-                                    purpose: 'Error getting AI explanation. Please check your API key.',
-                                    visualContext: `Found in ${fileName} at line ${lineNumber}`,
+                                    codeLine: codeSnippet.substring(0, 150) + (codeSnippet.length > 150 ? '...' : ''),
+                                    elementType: `${emoji} ${codeType}`,
+                                    purpose: '❌ Error getting AI explanation. Please check your API key.',
                                     lineNumber: lineNumber,
                                     isLoading: false
                                 }
@@ -621,12 +595,12 @@ export function activate(context: vscode.ExtensionContext) {
         }
     );
 
-    const showLegendCommand = vscode.commands.registerCommand('margin.showLegend', () => {
-        if (marginPanel) {
+    const showLegendCommand = vscode.commands.registerCommand('codevis.showLegend', () => {
+        if (codeVisPanel) {
             const editor = vscode.window.activeTextEditor;
-            marginPanel.webview.html = getWebviewContent(context, editor, marginPanel.webview);
+            codeVisPanel.webview.html = getWebviewContent(context, editor);
         } else {
-            createMarginPanel(context);
+            createCodeVisPanel(context);
         }
     });
 
@@ -634,41 +608,31 @@ export function activate(context: vscode.ExtensionContext) {
         openPanelCommand,
         toggleHoverCommand,
         aiHoverProvider,
-        showLegendCommand,
-        functionDecorationType,
-        loopDecorationType,
-        conditionalDecorationType,
-        apiCallDecorationType,
-        htmlElementDecorationType,
-        cssRuleDecorationType,
-        activeHoverDecorationType
+        showLegendCommand
     );
 }
 
-function createMarginPanel(context: vscode.ExtensionContext) {
-    if (marginPanel) {
-        marginPanel.reveal(vscode.ViewColumn.Beside);
+function createCodeVisPanel(context: vscode.ExtensionContext) {
+    if (codeVisPanel) {
+        codeVisPanel.reveal(vscode.ViewColumn.Beside);
         return;
     }
 
     const editor = vscode.window.activeTextEditor;
 
-    marginPanel = vscode.window.createWebviewPanel(
-        'margin',
-        'margin',
+    codeVisPanel = vscode.window.createWebviewPanel(
+        'codeVis',
+        'CodeVis',
         vscode.ViewColumn.Beside,
         {
             enableScripts: true,
-            localResourceRoots: [
-                vscode.Uri.file(path.join(context.extensionPath, 'media')),
-                vscode.Uri.file(context.extensionPath)
-            ]
+            localResourceRoots: [vscode.Uri.file(path.join(context.extensionPath, 'media'))]
         }
     );
 
-    marginPanel.webview.html = getWebviewContent(context, editor, marginPanel.webview);
+    codeVisPanel.webview.html = getWebviewContent(context, editor);
 
-    marginPanel.webview.onDidReceiveMessage(
+    codeVisPanel.webview.onDidReceiveMessage(
         message => {
             switch (message.type) {
                 case 'toggleHover':
@@ -685,17 +649,9 @@ function createMarginPanel(context: vscode.ExtensionContext) {
         context.subscriptions
     );
 
-    marginPanel.onDidDispose(
+    codeVisPanel.onDidDispose(
         () => {
-            marginPanel = undefined;
-            lastAnalyzedRange = undefined;
-            
-            // Clear hover timeout
-            if (hoverTimeout) {
-                clearTimeout(hoverTimeout);
-                hoverTimeout = undefined;
-            }
-            
+            codeVisPanel = undefined;
             const editor = vscode.window.activeTextEditor;
             if (editor) {
                 editor.setDecorations(functionDecorationType, []);
@@ -704,7 +660,6 @@ function createMarginPanel(context: vscode.ExtensionContext) {
                 editor.setDecorations(apiCallDecorationType, []);
                 editor.setDecorations(htmlElementDecorationType, []);
                 editor.setDecorations(cssRuleDecorationType, []);
-                editor.setDecorations(activeHoverDecorationType, []);
             }
         },
         null,
@@ -712,7 +667,7 @@ function createMarginPanel(context: vscode.ExtensionContext) {
     );
 }
 
-function getWebviewContent(context: vscode.ExtensionContext, editor?: vscode.TextEditor, webview?: vscode.Webview) {
+function getWebviewContent(context: vscode.ExtensionContext, editor?: vscode.TextEditor) {
     let fileVisualization = '';
 
     const hasValidFile = editor && editor.document && ['javascript', 'typescript', 'javascriptreact', 'typescriptreact', 'html', 'css'].includes(editor.document.languageId);
@@ -750,7 +705,13 @@ function getWebviewContent(context: vscode.ExtensionContext, editor?: vscode.Tex
         }
 
         fileVisualization = '<div class="file-viz-container">';
-        for (let i = 0; i < totalLines; i++) {
+        const fileName = document.fileName.split('/').pop() || 'Unknown';
+        fileVisualization += `<div style="margin-bottom: 10px; font-weight: bold;">📄 ${fileName}</div>`;
+        fileVisualization += `<div style="margin-bottom: 10px; font-size: 12px; color: var(--vscode-descriptionForeground);">Total Lines: ${totalLines} • ${languageId.toUpperCase()}</div>`;
+
+        const maxLines = Math.min(totalLines, 200);
+        
+        for (let i = 0; i < maxLines; i++) {
             const types = lineTypes[i] || [];
             let colorClass = 'empty';
 
@@ -768,11 +729,28 @@ function getWebviewContent(context: vscode.ExtensionContext, editor?: vscode.Tex
                 colorClass = 'css-color';
             }
 
-            fileVisualization += `<div class="line-bar ${colorClass}" title="Line ${i + 1}"></div>`;
+            fileVisualization += `<div class="line-bar ${colorClass}" title="Line ${i + 1}${types.length > 0 ? ': ' + types.join(', ') : ''}"></div>`;
         }
+
+        if (totalLines > 200) {
+            fileVisualization += `<div style="text-align: center; padding: 10px; color: var(--vscode-descriptionForeground); font-size: 12px;">... and ${totalLines - 200} more lines</div>`;
+        }
+
+        const summary = [];
+        if (functionRanges.length > 0) summary.push(`${functionRanges.length} functions`);
+        if (loopRanges.length > 0) summary.push(`${loopRanges.length} loops`);
+        if (conditionalRanges.length > 0) summary.push(`${conditionalRanges.length} conditionals`);
+        if (apiCallRanges.length > 0) summary.push(`${apiCallRanges.length} API calls`);
+        if (htmlElementRanges.length > 0) summary.push(`${htmlElementRanges.length} HTML elements`);
+        if (cssRuleRanges.length > 0) summary.push(`${cssRuleRanges.length} CSS rules`);
+
+        if (summary.length > 0) {
+            fileVisualization += `<div style="margin-top: 10px; padding: 8px; background: var(--vscode-editor-inactiveSelectionBackground); border-radius: 4px; font-size: 12px; color: var(--vscode-descriptionForeground);">Found: ${summary.join(', ')}</div>`;
+        }
+
         fileVisualization += '</div>';
     } else {
-        fileVisualization = '<div class="no-file">Open a supported file (JS/TS/HTML/CSS) to see visualization</div>';
+        fileVisualization = '<div class="no-file">Open a JavaScript/TypeScript/HTML/CSS file to see visualization</div>';
     }
 
     return `<!DOCTYPE html>
@@ -780,178 +758,179 @@ function getWebviewContent(context: vscode.ExtensionContext, editor?: vscode.Tex
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>margin</title>
+    <title>CodeVis</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
         body {
-            font-family: var(--vscode-font-family);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-size: 14px;
             color: var(--vscode-foreground);
-            background-color: var(--vscode-sideBar-background);
+            background: var(--vscode-editor-background);
             padding: 20px;
-            font-size: 13px;
+            margin: 0;
+            line-height: 1.5;
         }
         .header {
             margin-bottom: 24px;
-            padding-bottom: 16px;
-            border-bottom: 1px solid var(--vscode-panel-border);
-        }
-        .header-content {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            margin-bottom: 8px;
-        }
-        .logo {
-            height: 32px;
-            width: auto;
         }
         .header h2 {
+            color: var(--vscode-foreground);
+            margin: 0 0 8px 0;
             font-size: 20px;
             font-weight: 600;
-            margin: 0;
-            color: var(--vscode-foreground);
         }
         .header p {
-            font-size: 13px;
             color: var(--vscode-descriptionForeground);
+            margin: 0;
+            font-size: 13px;
         }
         .toggle-container {
             display: flex;
             align-items: center;
-            gap: 12px;
             margin-bottom: 24px;
-            padding: 12px;
-            background-color: var(--vscode-editor-background);
+            padding: 16px;
+            background: var(--vscode-editor-inactiveSelectionBackground);
+            border: 1px solid var(--vscode-panel-border);
             border-radius: 6px;
         }
         .toggle {
             position: relative;
-            width: 44px;
+            width: 48px;
             height: 24px;
-            background-color: var(--vscode-input-background);
-            border-radius: 12px;
+            background: rgba(128, 128, 128, 0.3);
             cursor: pointer;
-            transition: background-color 0.2s;
-            border: 1px solid var(--vscode-input-border);
+            margin-right: 12px;
+            transition: background-color 0.2s ease;
+            border-radius: 12px;
         }
         .toggle.active {
-            background-color: #5451F6;
+            background: rgba(100, 200, 100, 0.6);
         }
         .toggle-slider {
             position: absolute;
             top: 2px;
             left: 2px;
-            width: 18px;
-            height: 18px;
-            background-color: var(--vscode-button-foreground);
+            width: 20px;
+            height: 20px;
+            background: white;
+            transition: transform 0.2s ease;
             border-radius: 50%;
-            transition: transform 0.2s;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
         }
         .toggle.active .toggle-slider {
-            transform: translateX(20px);
+            transform: translateX(24px);
         }
         .toggle-container label {
-            font-size: 13px;
             color: var(--vscode-foreground);
-            cursor: pointer;
+            font-weight: 500;
+            font-size: 14px;
         }
         .analysis-area {
-            background-color: var(--vscode-editor-background);
+            background: var(--vscode-editor-inactiveSelectionBackground);
             border: 1px solid var(--vscode-panel-border);
             border-radius: 6px;
-            padding: 16px;
-            margin-bottom: 24px;
+            padding: 20px;
             min-height: 200px;
+            margin-bottom: 24px;
         }
         .placeholder {
+            color: var(--vscode-descriptionForeground);
             text-align: center;
             padding: 40px 20px;
-            color: var(--vscode-descriptionForeground);
+            font-size: 14px;
             font-style: italic;
         }
-        .analysis-content {
-            display: flex;
-            flex-direction: column;
-            gap: 16px;
-        }
         .analysis-content h3 {
+            color: var(--vscode-foreground);
+            margin-top: 0;
+            margin-bottom: 16px;
             font-size: 16px;
             font-weight: 600;
-            margin-bottom: 8px;
-            color: var(--vscode-foreground);
         }
         .analysis-section {
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
+            margin-bottom: 16px;
         }
         .analysis-label {
-            font-size: 11px;
-            font-weight: 600;
             color: var(--vscode-descriptionForeground);
+            font-size: 12px;
+            font-weight: 600;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
+            margin-bottom: 6px;
         }
         .analysis-value {
-            font-size: 13px;
             color: var(--vscode-foreground);
-            line-height: 1.5;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+        .code-line {
+            background: var(--vscode-textCodeBlock-background);
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+            font-size: 13px;
+            color: var(--vscode-textPreformat-foreground);
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-break: break-word;
         }
         .element-type-badge {
             display: inline-block;
             padding: 4px 10px;
-            background-color: var(--vscode-badge-background);
-            color: var(--vscode-badge-foreground);
             border-radius: 12px;
             font-size: 12px;
-            font-weight: 500;
+            font-weight: 600;
+            background: rgba(100, 200, 100, 0.3);
+            color: var(--vscode-foreground);
         }
         .legend-section {
-            margin-bottom: 24px;
+            margin-top: 32px;
+            padding-top: 24px;
+            border-top: 1px solid var(--vscode-panel-border);
         }
         .legend-title {
-            font-size: 14px;
+            font-size: 16px;
             font-weight: 600;
-            margin-bottom: 12px;
+            margin-bottom: 16px;
             color: var(--vscode-foreground);
         }
         .legend-item {
             display: flex;
             align-items: center;
-            gap: 12px;
-            margin-bottom: 10px;
+            margin-bottom: 6px;
             padding: 6px 10px;
             border-radius: 5px;
-            background-color: var(--vscode-editor-background);
+            background-color: var(--vscode-editor-inactiveSelectionBackground);
         }
         .color-box {
             width: 40px;
             height: 40px;
             margin-right: 12px;
             border-radius: 4px;
+            border: 2px solid;
             flex-shrink: 0;
         }
         .function-color {
             background-color: rgba(100, 200, 100, 0.2);
+            border-color: rgba(100, 200, 100, 0.2);
         }
         .loop-color {
             background-color: rgba(200, 100, 100, 0.2);
+            border-color: rgba(200, 100, 100, 0.2);
         }
         .conditional-color {
             background-color: rgba(100, 100, 200, 0.2);
+            border-color: rgba(100, 100, 200, 0.2);
         }
         .api-color {
             background-color: rgba(200, 200, 100, 0.2);
+            border-color: rgba(200, 200, 100, 0.2);
         }
         .html-color {
             background-color: rgba(255, 165, 0, 0.2);
+            border-color: rgba(255, 165, 0, 0.2);
         }
         .css-color {
             background-color: rgba(138, 43, 226, 0.2);
+            border-color: rgba(138, 43, 226, 0.2);
         }
         .legend-description {
             flex: 1;
@@ -976,20 +955,39 @@ function getWebviewContent(context: vscode.ExtensionContext, editor?: vscode.Tex
             padding: 12px;
             display: flex;
             flex-direction: column;
-            gap: 1px;
-            max-height: 300px;
+            gap: 2px;
+            max-height: 400px;
             overflow-y: auto;
         }
         .line-bar {
-            height: 3px;
+            height: 4px;
             border-radius: 2px;
             transition: height 0.2s;
+            min-height: 4px;
         }
         .line-bar:hover {
-            height: 6px;
+            height: 8px;
         }
         .line-bar.empty {
-            background-color: rgba(128, 128, 128, 0.2);
+            background-color: rgba(128, 128, 128, 0.15);
+        }
+        .line-bar.function-color {
+            background-color: rgba(100, 200, 100, 0.6);
+        }
+        .line-bar.loop-color {
+            background-color: rgba(200, 100, 100, 0.6);
+        }
+        .line-bar.conditional-color {
+            background-color: rgba(100, 100, 200, 0.6);
+        }
+        .line-bar.api-color {
+            background-color: rgba(200, 200, 100, 0.6);
+        }
+        .line-bar.html-color {
+            background-color: rgba(255, 165, 0, 0.6);
+        }
+        .line-bar.css-color {
+            background-color: rgba(138, 43, 226, 0.6);
         }
         .no-file {
             text-align: center;
@@ -1001,73 +999,71 @@ function getWebviewContent(context: vscode.ExtensionContext, editor?: vscode.Tex
 </head>
 <body>
     <div class="header">
-        <div class="header-content">
-            <img src="${webview ? webview.asWebviewUri(vscode.Uri.file(path.join(context.extensionPath, 'marginlogo.png'))) : ''}" alt="margin" class="logo">
-        </div>
-        <p>for designers to understand code</p>
+        <h2>🎨 CodeVis</h2>
+        <p>AI-powered code understanding for designers</p>
     </div>
     
     <div class="toggle-container">
         <div class="toggle" id="hoverToggle">
             <div class="toggle-slider"></div>
         </div>
-        <label for="hoverToggle">Enable Hover Analysis</label>
+        <label for="hoverToggle">Enable AI Hover Analysis</label>
     </div>
     
     <div class="analysis-area" id="analysisArea">
         <div class="placeholder">
-            Enable hover and move your cursor over highlighted code to see AI-powered explanations here...
+            ✨ Enable hover and move your cursor over highlighted code to see AI-powered explanations here...
         </div>
     </div>
     
     <div class="legend-section">
-        <div class="legend-title">Code Highlighting Legend</div>
+        <div class="legend-title">📊 Code Highlighting Legend</div>
         <div class="legend-item">
             <div class="color-box function-color"></div>
             <div class="legend-description">
-                <div class="title">Functions</div>
+                <div class="title">🟢 Functions</div>
                 <div class="examples">function declarations, arrow functions, methods</div>
             </div>
         </div>
         <div class="legend-item">
             <div class="color-box loop-color"></div>
             <div class="legend-description">
-                <div class="title">Loops</div>
+                <div class="title">🔴 Loops</div>
                 <div class="examples">for loops, while loops, do-while loops</div>
             </div>
         </div>
         <div class="legend-item">
             <div class="color-box conditional-color"></div>
             <div class="legend-description">
-                <div class="title">Conditionals</div>
+                <div class="title">🔵 Conditionals</div>
                 <div class="examples">if statements, else statements, ternary operators</div>
             </div>
         </div>
         <div class="legend-item">
             <div class="color-box api-color"></div>
             <div class="legend-description">
-                <div class="title">API Calls</div>
+                <div class="title">🟡 API Calls</div>
                 <div class="examples">fetch, axios, HTTP requests</div>
             </div>
         </div>
         <div class="legend-item">
             <div class="color-box html-color"></div>
             <div class="legend-description">
-                <div class="title">HTML Elements</div>
+                <div class="title">🟠 HTML Elements</div>
                 <div class="examples">div, span, button, input elements</div>
             </div>
         </div>
         <div class="legend-item">
             <div class="color-box css-color"></div>
             <div class="legend-description">
-                <div class="title">CSS Rules</div>
+                <div class="title">🟣 CSS Rules</div>
                 <div class="examples">selectors, properties, media queries</div>
             </div>
         </div>
     </div>
     
     <div class="file-viz-section">
-        <div class="legend-title">File Visualization Map</div>
+        <div class="legend-title">📈 File Visualization Map</div>
         ${fileVisualization}
     </div>
     
@@ -1101,11 +1097,9 @@ function getWebviewContent(context: vscode.ExtensionContext, editor?: vscode.Tex
         });
 
         function displayAnalysis(analysis) {
-            const isLoading = analysis.purpose && analysis.purpose.includes('');
-            
             analysisArea.innerHTML = \`
                 <div class="analysis-content">
-                    <h3> Code Analysis</h3>
+                    <h3>🤖 AI Code Analysis</h3>
                     <div class="analysis-section">
                         <div class="analysis-label">Element Type</div>
                         <div class="analysis-value">
@@ -1113,16 +1107,16 @@ function getWebviewContent(context: vscode.ExtensionContext, editor?: vscode.Tex
                         </div>
                     </div>
                     <div class="analysis-section">
-                        <div class="analysis-label">\${isLoading ? 'AI Explanation' : 'AI Explanation'}</div>
+                        <div class="analysis-label">Code Snippet</div>
+                        <div class="code-line">\${analysis.codeLine || 'N/A'}</div>
+                    </div>
+                    <div class="analysis-section">
+                        <div class="analysis-label">💡 AI Explanation</div>
                         <div class="analysis-value" style="line-height: 1.6; white-space: pre-wrap;">\${analysis.purpose || 'N/A'}</div>
                     </div>
                     <div class="analysis-section">
-                        <div class="analysis-label">Location</div>
-                        <div class="analysis-value">\${analysis.visualContext || 'N/A'}</div>
-                    </div>
-                    <div class="analysis-section">
                         <div class="analysis-label">Line Number</div>
-                        <div class="analysis-value">\${analysis.lineNumber || 'N/A'}</div>
+                        <div class="analysis-value">Line \${analysis.lineNumber || 'N/A'}</div>
                     </div>
                 </div>
             \`;

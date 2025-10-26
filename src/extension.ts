@@ -237,6 +237,19 @@ function updateDecorations(editor: vscode.TextEditor) {
         return;
     }
 
+    // Only show decorations when hover analysis is enabled
+    if (!isHoverEnabled) {
+        // Clear all decorations when disabled
+        editor.setDecorations(functionDecorationType, []);
+        editor.setDecorations(loopDecorationType, []);
+        editor.setDecorations(conditionalDecorationType, []);
+        editor.setDecorations(apiCallDecorationType, []);
+        editor.setDecorations(htmlElementDecorationType, []);
+        editor.setDecorations(cssRuleDecorationType, []);
+        editor.setDecorations(activeHoverDecorationType, []);
+        return;
+    }
+
     const document = editor.document;
     const code = document.getText();
     const languageId = document.languageId;

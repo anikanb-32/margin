@@ -33,14 +33,14 @@ suite('Extension Test Suite', () => {
     });
     test('Extension should be present', () => {
         // The extension should be loaded in the test environment
-        const extension = vscode.extensions.getExtension('codevis');
-        assert.ok(extension, 'CodeVis extension should be loaded');
+        const extension = vscode.extensions.getExtension('margin');
+        assert.ok(extension, 'Margin extension should be loaded');
     });
     test('Commands should be registered', async () => {
         const commands = await vscode.commands.getCommands(true);
-        assert.ok(commands.includes('codevis.openPanel'));
-        assert.ok(commands.includes('codevis.toggleHover'));
-        assert.ok(commands.includes('codevis.showLegend'));
+        assert.ok(commands.includes('margin.openPanel'));
+        assert.ok(commands.includes('margin.toggleHover'));
+        assert.ok(commands.includes('margin.showLegend'));
     });
 });
 //# sourceMappingURL=extension.test.js.map

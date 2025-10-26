@@ -1,6 +1,6 @@
 {
-  "name": "codevis",
-  "displayName": "CodeVis",
+  "name": "margin",
+  "displayName": "Margin",
   "description": "Code understanding extension",
   "version": "0.0.1",
   "engines": {
@@ -16,25 +16,25 @@
   "contributes": {
     "commands": [
       {
-        "command": "codevis.openPanel",
-        "title": "Open CodeVis Panel",
-        "category": "CodeVis"
+        "command": "margin.openPanel",
+        "title": "Open Margin Panel",
+        "category": "Margin"
       },
       {
-        "command": "codevis.toggleHover",
+        "command": "margin.toggleHover",
         "title": "Toggle Code Hover Analysis",
-        "category": "CodeVis"
+        "category": "Margin"
       },
       {
-        "command": "codevis.showLegend",
+        "command": "margin.showLegend",
         "title": "Show Code Legend",
-        "category": "CodeVis"
+        "category": "Margin"
       }
     ],
     "configuration": {
-      "title": "CodeVis",
+      "title": "Margin",
       "properties": {
-        "codevis.openaiApiKey": {
+        "margin.openaiApiKey": {
           "type": "string",
           "default": "",
           "description": "Your OpenAI API key for AI-powered code explanations"

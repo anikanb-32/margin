@@ -1,0 +1,73 @@
+{
+  "name": "codevis",
+  "displayName": "CodeVis",
+  "description": "Code understanding extension",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "*"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "codevis.openPanel",
+        "title": "Open CodeVis Panel",
+        "category": "CodeVis"
+      },
+      {
+        "command": "codevis.toggleHover",
+        "title": "Toggle Code Hover Analysis",
+        "category": "CodeVis"
+      },
+      {
+        "command": "codevis.showLegend",
+        "title": "Show Code Legend",
+        "category": "CodeVis"
+      }
+    ],
+    "configuration": {
+      "title": "CodeVis",
+      "properties": {
+        "codevis.openaiApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Your OpenAI API key for AI-powered code explanations"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts --rule 'curly: off'",
+    "test": "node ./out/test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/babel__parser": "^7.0.0",
+    "@types/babel__traverse": "^7.28.0",
+    "@types/glob": "^8.1.0",
+    "@types/mocha": "^10.0.1",
+    "@types/node": "16.x",
+    "@types/vscode": "^1.74.0",
+    "@typescript-eslint/eslint-plugin": "^8.46.2",
+    "@typescript-eslint/parser": "^8.46.2",
+    "@vscode/test-electron": "^2.3.0",
+    "eslint": "^9.38.0",
+    "glob": "^8.0.3",
+    "mocha": "^10.2.0",
+    "typescript": "^4.9.4"
+  },
+  "dependencies": {
+    "@babel/parser": "^7.28.5",
+    "@babel/traverse": "^7.28.5",
+    "openai": "^6.7.0"
+  }
+}

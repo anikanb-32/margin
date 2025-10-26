@@ -1,0 +1,287 @@
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.deactivate = exports.activate = void 0;
+const vscode = __importStar(require("vscode"));
+const path = __importStar(require("path"));
+// Global state for the extension
+let codeVisPanel;
+let isHoverEnabled = false;
+function activate(context) {
+    console.log('CodeVis extension activated!');
+    vscode.window.showInformationMessage('CodeVis is now active!');
+    // Register command to open the CodeVis panel
+    const openPanelCommand = vscode.commands.registerCommand('codevis.openPanel', () => {
+        createCodeVisPanel(context);
+    });
+    // Register command to toggle hover functionality
+    const toggleHoverCommand = vscode.commands.registerCommand('codevis.toggleHover', () => {
+        isHoverEnabled = !isHoverEnabled;
+        if (codeVisPanel) {
+            codeVisPanel.webview.postMessage({
+                type: 'hoverToggled',
+                enabled: isHoverEnabled
+            });
+        }
+        vscode.window.showInformationMessage(`Code hover ${isHoverEnabled ? 'enabled' : 'disabled'}`);
+    });
+    // Register hover provider for code analysis
+    const hoverProvider = vscode.languages.registerHoverProvider('*', {
+        provideHover(document, position, token) {
+            if (!isHoverEnabled) {
+                return null;
+            }
+            // Get the word at the current position
+            const wordRange = document.getWordRangeAtPosition(position);
+            if (!wordRange) {
+                return null;
+            }
+            const word = document.getText(wordRange);
+            const line = document.lineAt(position.line);
+            // Send analysis to panel
+            if (codeVisPanel) {
+                codeVisPanel.webview.postMessage({
+                    type: 'codeAnalysis',
+                    analysis: {
+                        word: word,
+                        line: line.text,
+                        function: 'Analyzing...',
+                        purpose: 'Processing code chunk...',
+                        type: 'Unknown'
+                    }
+                });
+            }
+            // Create hover content
+            const hoverContent = new vscode.Hover([
+                { language: 'typescript', value: line.text },
+                `**CodeVis Analysis:** Analyzing "${word}"...`
+            ]);
+            return hoverContent;
+        }
+    });
+    context.subscriptions.push(openPanelCommand, toggleHoverCommand, hoverProvider);
+}
+exports.activate = activate;
+function createCodeVisPanel(context) {
+    if (codeVisPanel) {
+        codeVisPanel.reveal(vscode.ViewColumn.Beside);
+        return;
+    }
+    // Create and show a new webview panel
+    codeVisPanel = vscode.window.createWebviewPanel('codeVis', 'CodeVis', vscode.ViewColumn.Beside, {
+        enableScripts: true,
+        localResourceRoots: [vscode.Uri.file(path.join(context.extensionPath, 'media'))]
+    });
+    // Set the webview's initial html content
+    codeVisPanel.webview.html = getWebviewContent();
+    // Handle messages from the webview
+    codeVisPanel.webview.onDidReceiveMessage(message => {
+        switch (message.type) {
+            case 'toggleHover':
+                isHoverEnabled = message.enabled;
+                vscode.window.showInformationMessage(`Code hover ${isHoverEnabled ? 'enabled' : 'disabled'}`);
+                break;
+        }
+    }, undefined, context.subscriptions);
+    // Clean up when the panel is closed
+    codeVisPanel.onDidDispose(() => {
+        codeVisPanel = undefined;
+    }, null, context.subscriptions);
+}
+function getWebviewContent() {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CodeVis</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-size: 14px;
+            color: #333;
+            background: #f8f9fa;
+            padding: 24px;
+            margin: 0;
+            line-height: 1.5;
+        }
+        .header {
+            margin-bottom: 32px;
+        }
+        .header h2 {
+            color: #1a1a1a;
+            margin: 0 0 8px 0;
+            font-size: 20px;
+            font-weight: 600;
+        }
+        .header p {
+            color: #666;
+            margin: 0;
+            font-size: 14px;
+        }
+        .toggle-container {
+            display: flex;
+            align-items: center;
+            margin-bottom: 24px;
+            padding: 16px;
+            background: white;
+            border: 1px solid #e1e5e9;
+        }
+        .toggle {
+            position: relative;
+            width: 48px;
+            height: 24px;
+            background: #e1e5e9;
+            cursor: pointer;
+            margin-right: 12px;
+            transition: background-color 0.2s ease;
+        }
+        .toggle.active {
+            background: #007acc;
+        }
+        .toggle-slider {
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            width: 20px;
+            height: 20px;
+            background: white;
+            transition: transform 0.2s ease;
+        }
+        .toggle.active .toggle-slider {
+            transform: translateX(24px);
+        }
+        .toggle-container label {
+            color: #333;
+            font-weight: 500;
+            font-size: 14px;
+        }
+        .analysis-area {
+            background: white;
+            border: 1px solid #e1e5e9;
+            padding: 20px;
+            min-height: 200px;
+            font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+        }
+        .placeholder {
+            color: #999;
+            text-align: center;
+            padding: 40px 20px;
+            font-size: 14px;
+        }
+        .analysis-content h3 {
+            color: #1a1a1a;
+            margin-top: 0;
+            margin-bottom: 16px;
+            font-size: 16px;
+            font-weight: 600;
+        }
+        .analysis-content p {
+            margin: 8px 0;
+            color: #333;
+            font-size: 14px;
+        }
+        .analysis-content strong {
+            color: #007acc;
+            font-weight: 600;
+        }
+        .analysis-content code {
+            background: #f1f3f4;
+            padding: 2px 6px;
+            font-family: inherit;
+            color: #d73a49;
+            font-size: 13px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h2>CodeVis - Code Understanding Assistant</h2>
+        <p>Hover over code chunks to understand their purpose and functionality.</p>
+    </div>
+    
+    <div class="toggle-container">
+        <div class="toggle" id="hoverToggle">
+            <div class="toggle-slider"></div>
+        </div>
+        <label for="hoverToggle">Enable Code Hover Analysis</label>
+    </div>
+    
+    <div class="analysis-area" id="analysisArea">
+        <div class="placeholder">
+            Hover over code in your editor to see analysis here...
+        </div>
+    </div>
+
+    <script>
+        const vscode = acquireVsCodeApi();
+        const toggle = document.getElementById('hoverToggle');
+        const analysisArea = document.getElementById('analysisArea');
+        let isEnabled = false;
+
+        toggle.addEventListener('click', () => {
+            isEnabled = !isEnabled;
+            toggle.classList.toggle('active', isEnabled);
+            
+            // Send message to extension
+            vscode.postMessage({
+                type: 'toggleHover',
+                enabled: isEnabled
+            });
+        });
+
+        // Listen for messages from the extension
+        window.addEventListener('message', event => {
+            const message = event.data;
+            switch (message.type) {
+                case 'hoverToggled':
+                    isEnabled = message.enabled;
+                    toggle.classList.toggle('active', isEnabled);
+                    break;
+                case 'codeAnalysis':
+                    displayAnalysis(message.analysis);
+                    break;
+            }
+        });
+
+        function displayAnalysis(analysis) {
+            analysisArea.innerHTML = \`
+                <div class="analysis-content">
+                    <h3>Code Analysis</h3>
+                    <p><strong>Word:</strong> \${analysis.word || 'Unknown'}</p>
+                    <p><strong>Line:</strong> <code>\${analysis.line || 'Unknown'}</code></p>
+                    <p><strong>Function:</strong> \${analysis.function || 'Analyzing...'}</p>
+                    <p><strong>Purpose:</strong> \${analysis.purpose || 'Processing...'}</p>
+                    <p><strong>Type:</strong> \${analysis.type || 'Unknown'}</p>
+                </div>
+            \`;
+        }
+    </script>
+</body>
+</html>`;
+}
+function deactivate() { }
+exports.deactivate = deactivate;
+//# sourceMappingURL=old.js.map
